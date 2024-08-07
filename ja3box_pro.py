@@ -12,7 +12,11 @@ from scapy.utils import PcapWriter
 from colorama import Fore, Style, init as Init
 from scapy.all import sniff, load_layer, Ether, bind_layers, TCP
 
-# Ignore specific warnings
+# ignore warning:
+# CryptographyDeprecationWarning:
+# Support for unsafe construction of public numbers
+# from encoded data will be removed in a future version.
+# Please use EllipticCurvePublicKey.from_encoded_point
 warnings.filterwarnings('ignore')
 
 # 兼容 win 的颜色输出
@@ -20,6 +24,11 @@ Init()
 
 
 def get_attr(obj, attr, default=""):
+    '''
+    obj: 对象
+    attr: 属性名
+    default: 默认值
+    '''
     value = getattr(obj, attr, default)
     if value is None:
         value = default
@@ -29,15 +38,23 @@ def get_attr(obj, attr, default=""):
 def timer_unit(s):
     if s <= 1:
         return f'{round(s, 1)}s'
-    num, unit = [(i, u) for i, u in ((s / 60**i, u) for i, u in enumerate('smhd')) if i >= 1][-1]
+
+    num, unit = [
+        (i, u) for i, u in ((s / 60**i, u) for i, u in enumerate('smhd')) if i >= 1
+    ][-1]
+
     return f'{round(num, 1)}{unit}'
 
 
 def put_color(string, color, bold=True):
+    '''
+    give me some color to see :P
+    '''
     if color == 'gray':
         COLOR = Style.DIM + Fore.WHITE
     else:
         COLOR = getattr(Fore, color.upper(), "WHITE")
+
     return f'{Style.BRIGHT if bold else ""}{COLOR}{str(string)}{Style.RESET_ALL}'
 
 
@@ -75,7 +92,7 @@ def remove_grease(value):
 
 
 def collector(pkt):
-    global COUNT, COUNT_SERVER, COUNT_CLIENT, NEW_BIND_PORTS
+    global COUNT, COUNT_SERVER, COUNT_CLIENT, NEW_BIND_PORTS, port_filter
 
     COUNT += 1
 
@@ -95,6 +112,9 @@ def collector(pkt):
 
     dst_ip = IP_layer.dst
     dst_port = pkt.getlayer("TCP").dport
+
+    if port_filter and (src_port not in port_filter and dst_port not in port_filter):
+        return
 
     layer = get_attr(tcp_layer[0], 'msg')
     if not layer:
@@ -165,14 +185,14 @@ def collector(pkt):
 
             try:
                 loc = Extensions_Type.index(11)
-            except IndexError:
+            except ValueError:
                 EC_Point_Formats = []
             else:
                 EC_Point_Formats = get_attr(exts[loc], 'ecpl')
 
             try:
                 loc = Extensions_Type.index(10)
-            except IndexError:
+            except ValueError:
                 Elliptic_Curves = []
             else:
                 Elliptic_Curves = get_attr(exts[loc], 'groups')
@@ -240,7 +260,7 @@ def collector(pkt):
         Print(color_data)
 
 
-VERSION = '2.2'
+VERSION = '2.8'
 
 print(f'''
 {Style.BRIGHT}{Fore.YELLOW}  ________
@@ -257,8 +277,8 @@ parser.add_argument(
     help="interface or list of interfaces (default: sniffing on all interfaces)"
 )
 parser.add_argument(
-    "-p", default=None, type=int,
-    help="port to monitor"
+    "-p", type=int, nargs='*',
+    help="filter by ports (comma-separated)"
 )
 parser.add_argument(
     "-f", default=None,
@@ -312,7 +332,7 @@ savepcap = args.savepcap
 pcap_filename = args.pf
 iface = args.i
 ja3_type = args.jtype
-port = args.p
+port_filter = set(args.p) if args.p else None
 
 if savepcap:
     pcap_dump = PcapWriter(
@@ -328,25 +348,28 @@ sniff_args = {
     'iface': iface if iface != 'Any' else None,
 }
 
-if port:
-    sniff_args['filter'] = f"tcp port {port}" if not bpf else f"tcp port {port} and ({bpf})"
-
 if args.f:
+    # 读取 pcap 文件，离线模式
     filename = args.f
+    offline = filename
+
     sniff_args['offline'] = filename
+
     print(f'[*] mode: {put_color("offline", "yellow")}')
     print(f'[*] filename: {put_color(filename, "white")}', end='\n\n')
+
 else:
+    # 在线模式
     print(f'[*] mode: {put_color("online", "green")}')
     print(f'[*] iface: {put_color(iface, "white")}', end='\n\n')
 
 print(f'[*] BPF: {put_color(bpf, "white")}')
-print(f'[*] port: {put_color(port, "white")}')
 print(f'[*] type filter: {put_color(ja3_type, "white")}')
 print(f'[*] output filename: {put_color(output_filename, "white")}')
 print(f'[*] output as json: {put_color(need_json, "green" if need_json else "white", bold=False)}')
 print(f'[*] save raw pcap: {put_color(savepcap, "green" if savepcap else "white", bold=False)}')
-
+if port_filter:
+    print(f'[*] port filter: {put_color(", ".join(map(str, port_filter)), "white")}')
 if savepcap:
     print(f'[*] saved in: {put_color(pcap_filename, "white")}.pcap')
 
@@ -367,7 +390,7 @@ print(
     f'all packets: {put_color(COUNT, "cyan")};',
     f'client hello: {put_color(COUNT_CLIENT, "cyan")};',
     f'server hello: {put_color(COUNT_SERVER, "cyan")};',
-    f'in {put_color(timer_unit(end_ts - start_ts), "white")}'
+    f'in {put_color(timer_unit(end_ts-start_ts), "white")}'
 )
 
 print(
